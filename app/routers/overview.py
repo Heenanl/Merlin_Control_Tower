@@ -6,6 +6,7 @@ from app.auth import CurrentUser
 from app.db import StatementExecutionClient
 from app.registry import OVERVIEW_SQL
 from app.services.dependencies import current_user_dep, db_for_user
+from app.settings import settings
 
 router = APIRouter(prefix="/api", tags=["overview"])
 
@@ -16,6 +17,7 @@ async def me(user: CurrentUser = Depends(current_user_dep)) -> dict:
         "email": user.email,
         "preferred_username": user.preferred_username,
         "roles": sorted(user.roles),
+        "self_approval_enabled": settings.allow_self_approval,
     }
 
 

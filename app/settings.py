@@ -18,6 +18,8 @@ class AppSettings:
         or ""
     )
     source_system: str = "merlin_control_tower"
+    # DEMO ONLY: lets one person draft and approve the same request. Off unless explicitly enabled.
+    allow_self_approval: bool = os.getenv("MERLIN_ALLOW_SELF_APPROVAL", "false").strip().lower() == "true"
     stale_content_days: int = 300
     default_followup_days: int = 14
     reference_population: int = 5_000_000

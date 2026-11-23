@@ -5,6 +5,9 @@ env:
     value: merlin_demo
   - name: MERLIN_SCHEMA
     value: merlin_demo
+  # DEMO ONLY: remove (or set to "false") once a second approver (e.g. Michael) is in app_roles
+  - name: MERLIN_ALLOW_SELF_APPROVAL
+    value: "true"
 
 resources:
   - name: warehouse

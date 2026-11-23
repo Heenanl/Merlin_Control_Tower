@@ -152,8 +152,12 @@ def submit_request(db: StatementExecutionClient, request_id: str, user: CurrentU
 def approve_request(db: StatementExecutionClient, request_id: str, user: CurrentUser, comment: str | None = None) -> Dict[str, Any]:
     user.require_any({"approver"})
     req = get_change_request(db, request_id)
-    if req["drafted_by"].lower() == user.email.lower():
+    self_approval = req["drafted_by"].lower() == user.email.lower()
+    if self_approval and not settings.allow_self_approval:
         raise HTTPException(status_code=403, detail="Drafters cannot approve their own requests")
+    if self_approval:
+        # make demo-mode self-approvals visible in the request and its audit trail
+        comment = f"[DEMO self-approval] {comment or ''}".strip()
     if req["status"] not in {"submitted", "draft"}:
         raise HTTPException(status_code=400, detail="Only draft or submitted requests can be approved")
     db.execute(
@@ -166,7 +170,7 @@ def approve_request(db: StatementExecutionClient, request_id: str, user: Current
         """
     )
     db.execute(
-        f"INSERT INTO {settings.fq_schema}.change_audit_log VALUES ({sql_literal(new_id('audit'))}, {sql_literal(request_id)}, 'approved', {sql_literal(user.email)}, current_timestamp(), {sql_literal(req['object_type'])}, {sql_literal(req['object_id'])}, NULL, NULL, NULL, current_timestamp(), {sql_literal(settings.source_system)})"
+        f"INSERT INTO {settings.fq_schema}.change_audit_log VALUES ({sql_literal(new_id('audit'))}, {sql_literal(request_id)}, 'approved', {sql_literal(user.email)}, current_timestamp(), {sql_literal(req['object_type'])}, {sql_literal(req['object_id'])}, NULL, {sql_literal('self-approved (demo mode)' if self_approval else None)}, NULL, current_timestamp(), {sql_literal(settings.source_system)})"
     )
     return get_change_request(db, request_id)
 

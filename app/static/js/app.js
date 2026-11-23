@@ -32,6 +32,9 @@ export function notify(message, level = "success") {
 async function loadUser() {
   state.me = await api("/api/me");
   document.getElementById("user-pill").textContent = `${state.me.preferred_username} · ${state.me.roles.join(", ")}`;
+  if (state.me.self_approval_enabled) {
+    notify("Demo mode: self-approval is enabled. Turn it off before real use.", "error");
+  }
 }
 
 async function renderPage() {
