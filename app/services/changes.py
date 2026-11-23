@@ -288,14 +288,19 @@ def revert_request(db: StatementExecutionClient, request_id: str, user: CurrentU
 
     reverse_ops = []
     for op in reversed(req["operations"]):
+        spec = get_table(op["table"])
+        rev_op = "hard_delete" if op["op"] == "insert" else ("insert" if op["op"] == "hard_delete" else "update")
+        # restore only business columns; system columns are regenerated on write
+        keep = set(spec.create_columns if rev_op == "insert" else spec.editable_columns)
+        restore = {k: v for k, v in (op.get("before") or {}).items() if k in keep} if rev_op != "hard_delete" else None
         reverse_ops.append(
             {
                 "table": op["table"],
-                "op": "hard_delete" if op["op"] == "insert" else ("insert" if op["op"] == "hard_delete" else "update"),
+                "op": rev_op,
                 "key": op["key"],
                 # before=None -> prepare_operations reloads the current live row (with its current version)
                 "before": None,
-                "after": op.get("before"),
+                "after": restore,
             }
         )
     revert_cr = create_change_request(
@@ -312,5 +317,8 @@ def revert_request(db: StatementExecutionClient, request_id: str, user: CurrentU
     promote_request(db, revert_cr["request_id"], user)
     db.execute(
         f"UPDATE {settings.fq_schema}.change_request SET status = 'reverted', reverted_by = {sql_literal(user.email)}, reverted_at = current_timestamp(), updated_at = current_timestamp(), audit_timestamp = current_timestamp(), source_system = {sql_literal(settings.source_system)} WHERE request_id = {sql_literal(request_id)}"
+    )
+    db.execute(
+        f"INSERT INTO {settings.fq_schema}.change_audit_log VALUES ({sql_literal(new_id('audit'))}, {sql_literal(request_id)}, 'reverted', {sql_literal(user.email)}, current_timestamp(), {sql_literal(req['object_type'])}, {sql_literal(req['object_id'])}, NULL, {sql_literal('reverted by ' + revert_cr['request_id'])}, NULL, current_timestamp(), {sql_literal(settings.source_system)})"
     )
     return get_change_request(db, revert_cr["request_id"])
