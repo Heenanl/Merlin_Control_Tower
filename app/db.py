@@ -36,7 +36,9 @@ class StatementExecutionClient:
         payload = {
             "statement": statement,
             "warehouse_id": settings.warehouse_id,
-            "wait_timeout": f"{wait_s}s",
+            # API accepts 0 or 5-50s; longer statements keep running and are polled below
+            "wait_timeout": f"{max(5, min(int(wait_s), 50))}s",
+            "on_wait_timeout": "CONTINUE",
             "format": "JSON_ARRAY",
             "disposition": "INLINE",
             "row_limit": row_limit,
@@ -47,8 +49,11 @@ class StatementExecutionClient:
         body = response.json()
         statement_id = body["statement_id"]
         status = body.get("status", {}).get("state")
+        deadline = time.time() + max(wait_s, 50) + 240
         while status in {"PENDING", "RUNNING"}:
-            time.sleep(0.4)
+            if time.time() > deadline:
+                raise HTTPException(status_code=504, detail="SQL statement is still running; try again shortly")
+            time.sleep(1.0)
             poll = requests.get(f"{self.base_url}/api/2.0/sql/statements/{statement_id}", headers=self.headers, timeout=60)
             self._raise_for_status(poll)
             body = poll.json()

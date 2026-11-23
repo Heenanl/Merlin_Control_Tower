@@ -21,7 +21,10 @@ const state = {
 
 function paintAlerts() {
   const alerts = document.getElementById("alerts");
-  alerts.innerHTML = state.alerts.map((a) => `<div class="alert ${a.level}">${a.message}</div>`).join("");
+  const banner = state.me?.self_approval_enabled
+    ? `<div class="alert warn-banner">Demo mode: self-approval is enabled. Turn it off before real use.</div>`
+    : "";
+  alerts.innerHTML = banner + state.alerts.map((a) => `<div class="alert ${a.level}">${a.message}</div>`).join("");
 }
 
 export function notify(message, level = "success") {
@@ -32,9 +35,7 @@ export function notify(message, level = "success") {
 async function loadUser() {
   state.me = await api("/api/me");
   document.getElementById("user-pill").textContent = `${state.me.preferred_username} · ${state.me.roles.join(", ")}`;
-  if (state.me.self_approval_enabled) {
-    notify("Demo mode: self-approval is enabled. Turn it off before real use.", "error");
-  }
+  paintAlerts();
 }
 
 async function renderPage() {

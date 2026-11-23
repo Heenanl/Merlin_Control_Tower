@@ -1,5 +1,24 @@
 import { api, escapeHtml, renderTable, statusChip } from "/static/js/api.js";
 
+// Only offer the lifecycle actions that are valid for the request's current status.
+const ACTIONS_BY_STATUS = {
+  draft: [["submit", "Submit", ""], ["approve", "Approve", "success"], ["reject", "Reject", "danger"]],
+  submitted: [["approve", "Approve", "success"], ["reject", "Reject", "danger"]],
+  approved: [["promote", "Promote", "warn"], ["reject", "Reject", "danger"]],
+  promoted: [["revert", "Revert", "danger"]],
+  rejected: [],
+  reverted: [],
+};
+
+function actionButtons(row) {
+  const id = escapeHtml(row.request_id);
+  const buttons = [`<button class="button" data-action="preview" data-request-id="${id}">Preview</button>`];
+  for (const [action, label, style] of ACTIONS_BY_STATUS[row.status] || []) {
+    buttons.push(`<button class="button ${style}" data-action="${action}" data-request-id="${id}">${label}</button>`);
+  }
+  return buttons.join("");
+}
+
 async function act(requestId, action, notify) {
   const result = await api(`/api/change-requests/${requestId}/${action}`, { method: "POST", body: JSON.stringify({}) });
   notify(`${action} complete for ${requestId}`);
@@ -28,13 +47,7 @@ export async function renderChangeRequests(mount, state, { notify }) {
                     <td>${statusChip(row.status)}</td>
                     <td>${escapeHtml(row.drafted_by)}</td>
                     <td>${escapeHtml(row.updated_at || row.created_at)}</td>
-                    <td class="actions">
-                      <button class="button" data-action="preview" data-request-id="${escapeHtml(row.request_id)}">Preview</button>
-                      <button class="button" data-action="submit" data-request-id="${escapeHtml(row.request_id)}">Submit</button>
-                      <button class="button success" data-action="approve" data-request-id="${escapeHtml(row.request_id)}">Approve</button>
-                      <button class="button warn" data-action="promote" data-request-id="${escapeHtml(row.request_id)}">Promote</button>
-                      <button class="button danger" data-action="revert" data-request-id="${escapeHtml(row.request_id)}">Revert</button>
-                    </td>
+                    <td class="actions">${actionButtons(row)}</td>
                   </tr>`
                 )
                 .join("")}
@@ -69,7 +82,10 @@ export async function renderChangeRequests(mount, state, { notify }) {
             ${renderTable(history.rows)}
           `;
         } else {
+          button.disabled = true;
+          button.textContent = "Working…";
           await act(requestId, action, notify);
+          await renderChangeRequests(mount, state, { notify });
         }
       } catch (error) {
         notify(error.message, "error");
