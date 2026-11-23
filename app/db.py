@@ -27,7 +27,9 @@ class StatementExecutionClient:
             raise HTTPException(status_code=500, detail="Missing Databricks host configuration")
         if not settings.warehouse_id:
             raise HTTPException(status_code=500, detail="Missing DATABRICKS_WAREHOUSE_ID app resource")
-        self.base_url = settings.databricks_host.rstrip("/")
+        host = settings.databricks_host.rstrip("/")
+        # Databricks Apps injects DATABRICKS_HOST without a scheme
+        self.base_url = host if host.startswith("http") else f"https://{host}"
         self.headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
 
     def execute(self, statement: str, *, wait_s: int = 30, row_limit: int = 5000) -> List[Dict[str, Any]]:

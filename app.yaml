@@ -8,10 +8,6 @@ env:
   # DEMO ONLY: remove (or set to "false") once a second approver (e.g. Michael) is in app_roles
   - name: MERLIN_ALLOW_SELF_APPROVAL
     value: "true"
-
-resources:
-  - name: warehouse
-    type: sql-warehouse
+  # Populated from the app's SQL warehouse resource (resource key: sql-warehouse)
+  - name: DATABRICKS_WAREHOUSE_ID
     valueFrom: sql-warehouse
-    env:
-      - name: DATABRICKS_WAREHOUSE_ID
