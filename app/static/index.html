@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Merlin Control Tower</title>
+    <link rel="stylesheet" href="/static/css/styles.css" />
+  </head>
+  <body>
+    <header class="shell-header">
+      <div>
+        <h1>Merlin Control Tower</h1>
+        <p>ABN AMRO hyperpersonalisation demo: governed self-service config changes for Merlin.</p>
+      </div>
+      <div id="user-pill" class="user-pill">Loading user…</div>
+    </header>
+
+    <nav class="tabs">
+      <button data-page="overview" class="tab is-active">Overview</button>
+      <button data-page="matrix" class="tab">Rule × Content matrix</button>
+      <button data-page="rules" class="tab">Rules &amp; Propositions</button>
+      <button data-page="changeRequests" class="tab">Change requests</button>
+      <button data-page="simulation" class="tab">Run simulation</button>
+    </nav>
+
+    <main class="shell-main">
+      <section id="alerts"></section>
+      <section id="page-content"></section>
+    </main>
+
+    <template id="loading-template">
+      <div class="card loading-card">Loading…</div>
+    </template>
+
+    <script type="module" src="/static/js/app.js"></script>
+  </body>
+</html>

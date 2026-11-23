@@ -205,6 +205,10 @@ TABLES = {
     checks={"chk_role": "role IN ('drafter','approver','viewer')"}),
 }
 
+# Tables the Control Tower app writes inside BEGIN ATOMIC transactions need catalog commits.
+TXN_TABLES = {"proposition", "content", "eligibility_rule", "eligibility_rule_set", "content_eligibility_rule",
+              "model_metadata", "next_best_experience", "contact_decision_output", "change_request", "change_audit_log"}
+
 skipped_tags = set()
 for name, t in TABLES.items():
     fq = f"{FQ}.{name}"
@@ -214,6 +218,8 @@ for name, t in TABLES.items():
              "contains_pii": str(has_pii).lower()}
     if has_pii:
         props["pii_columns"] = ",".join(t["pii"])
+    if name in TXN_TABLES:
+        props["delta.feature.catalogManaged"] = "supported"
     props_sql = ", ".join(f"'{k}' = '{v}'" for k, v in props.items())
     spark.sql(f"CREATE OR REPLACE TABLE {fq} (\n  {t['cols']}\n) COMMENT '{comment}' TBLPROPERTIES ({props_sql})")
     for cname, expr in t.get("checks", {}).items():

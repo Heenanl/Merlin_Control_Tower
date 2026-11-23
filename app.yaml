@@ -1,0 +1,14 @@
+command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+env:
+  - name: MERLIN_CATALOG
+    value: merlin_demo
+  - name: MERLIN_SCHEMA
+    value: merlin_demo
+
+resources:
+  - name: warehouse
+    type: sql-warehouse
+    valueFrom: sql-warehouse
+    env:
+      - name: DATABRICKS_WAREHOUSE_ID
