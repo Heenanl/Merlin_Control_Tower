@@ -23,10 +23,32 @@ export async function renderSimulation(mount, state, { notify }) {
   `;
 
   mount.querySelector("#run-simulation").addEventListener("click", async () => {
+    const btn = mount.querySelector("#run-simulation");
+    btn.disabled = true;
+    btn.textContent = "Running\u2026";
     try {
-      const result = await api("/api/simulation/run", { method: "POST", body: JSON.stringify({}) });
-      notify(`Simulation completed for snapshot ${result.latest?.snapshotdate || "today"}`);
+      const { statement_id } = await api("/api/simulation/run", { method: "POST", body: JSON.stringify({}) });
+      const poll = async () => {
+        try {
+          const result = await api(`/api/simulation/status/${statement_id}`);
+          if (result.status === "SUCCEEDED") {
+            btn.disabled = false;
+            btn.textContent = "Run simulation now";
+            notify(`Simulation completed for snapshot ${result.latest?.snapshotdate || "today"}`);
+            renderSimulation(mount, state, { notify });
+          } else {
+            setTimeout(poll, 3000);
+          }
+        } catch (err) {
+          btn.disabled = false;
+          btn.textContent = "Run simulation now";
+          notify(err.message, "error");
+        }
+      };
+      setTimeout(poll, 3000);
     } catch (error) {
+      btn.disabled = false;
+      btn.textContent = "Run simulation now";
       notify(error.message, "error");
     }
   });

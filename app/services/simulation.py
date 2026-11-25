@@ -7,8 +7,7 @@ from app.services.impact import _rule_union_sql, load_config_state, metadata_map
 from app.settings import settings
 
 
-def _candidate_cte_sql(db: StatementExecutionClient) -> str:
-    state = load_config_state(db)
+def _candidate_cte_sql(state: Dict[str, Any]) -> str:
     rule_union = _rule_union_sql(state)
     meta = metadata_map(state["model_metadata"])
     threshold = float(meta.get("score_threshold", 0.30))
@@ -45,7 +44,8 @@ def _candidate_cte_sql(db: StatementExecutionClient) -> str:
     """
 
 
-def run_simulation(db: StatementExecutionClient) -> Dict[str, Any]:
+def _build_simulation_sql(db: StatementExecutionClient) -> str:
+    """Build the full BEGIN ATOMIC SQL string; loads config exactly once."""
     state = load_config_state(db)
     meta = metadata_map(state["model_metadata"])
     scaled_cap = int(float(meta.get("weekly_cap", 0)) * db.execute_scalar(f"SELECT count(*) FROM {settings.fq_schema}.customer", default=0) / float(meta.get("reference_population", settings.reference_population)))
@@ -56,7 +56,7 @@ def run_simulation(db: StatementExecutionClient) -> Dict[str, Any]:
     explore_cap = int(scaled_cap * explore_share)
     run_id = new_id("sim")
 
-    cte = _candidate_cte_sql(db)
+    cte = _candidate_cte_sql(state)
     nbe_insert = f"""
     INSERT INTO {settings.fq_schema}.next_best_experience
     {cte},
@@ -112,8 +112,26 @@ def run_simulation(db: StatementExecutionClient) -> Dict[str, Any]:
       {cdo_insert};
     END;
     """
-    db.execute(sql, wait_s=90)
+    return sql
+
+
+def run_simulation(db: StatementExecutionClient) -> Dict[str, Any]:
+    db.execute(_build_simulation_sql(db), wait_s=600)
     return simulation_summary(db)
+
+
+def start_simulation(db: StatementExecutionClient) -> Dict[str, Any]:
+    """Submit the simulation SQL asynchronously; returns statement_id immediately."""
+    statement_id = db.submit(_build_simulation_sql(db))
+    return {"statement_id": statement_id, "status": "RUNNING"}
+
+
+def poll_simulation_status(db: StatementExecutionClient, statement_id: str) -> Dict[str, Any]:
+    """Check status of a submitted simulation statement; returns summary when done."""
+    result = db.get_statement_result(statement_id)
+    if result["state"] == "SUCCEEDED":
+        return {"status": "SUCCEEDED", **simulation_summary(db)}
+    return {"status": result["state"]}
 
 
 def simulation_summary(db: StatementExecutionClient) -> Dict[str, Any]:

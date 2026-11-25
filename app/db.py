@@ -104,6 +104,45 @@ class StatementExecutionClient:
             for row in data
         ]
 
+    def submit(self, statement: str) -> str:
+        """Start a SQL statement and return its statement_id without waiting."""
+        payload = {
+            "statement": statement,
+            "warehouse_id": settings.warehouse_id,
+            "wait_timeout": "5s",
+            "on_wait_timeout": "CONTINUE",
+            "format": "JSON_ARRAY",
+            "disposition": "INLINE",
+        }
+        response = requests.post(
+            f"{self.base_url}/api/2.0/sql/statements/",
+            headers=self.headers,
+            json=payload,
+            timeout=15,
+        )
+        self._raise_for_status(response)
+        return response.json()["statement_id"]
+
+    def get_statement_result(self, statement_id: str) -> Dict[str, Any]:
+        """Poll a submitted statement. Returns {state, rows} where rows is None unless SUCCEEDED."""
+        poll = requests.get(
+            f"{self.base_url}/api/2.0/sql/statements/{statement_id}",
+            headers=self.headers,
+            timeout=15,
+        )
+        self._raise_for_status(poll)
+        body = poll.json()
+        state = body.get("status", {}).get("state", "UNKNOWN")
+        if state == "SUCCEEDED":
+            return {"state": state, "rows": self._rows_from_body(body)}
+        if state in {"FAILED", "CANCELED", "CLOSED"}:
+            err = body.get("status", {}).get("error", {})
+            raise HTTPException(
+                status_code=400,
+                detail=err.get("message") or f"SQL statement {state}",
+            )
+        return {"state": state, "rows": None}  # PENDING or RUNNING
+
     def column_types(self, table: str) -> Dict[str, str]:
         rows = self.execute(
             f"""

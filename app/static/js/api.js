@@ -4,7 +4,13 @@ export async function api(path, options = {}) {
     ...options,
   });
   const text = await response.text();
-  const data = text ? JSON.parse(text) : {};
+  let data = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    // Gateway errors (e.g. 504 timeout) return HTML, not JSON
+    throw new Error(`Request failed: HTTP ${response.status} ${response.statusText}`.trim());
+  }
   if (!response.ok) {
     throw new Error(data.detail || response.statusText || "Request failed");
   }
