@@ -3,25 +3,15 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from app.db import StatementExecutionClient, new_id, sql_literal
-from app.services.impact import _rule_union_sql, load_config_state, metadata_map
+from app.services.impact import eligible_content_ctes, load_config_state, metadata_map
 from app.settings import settings
 
 
 def _candidate_cte_sql(state: Dict[str, Any]) -> str:
-    rule_union = _rule_union_sql(state)
     meta = metadata_map(state["model_metadata"])
     threshold = float(meta.get("score_threshold", 0.30))
     return f"""
-    WITH rule_rows AS (
-      {rule_union}
-    ),
-    eligible_content AS (
-      SELECT business_contact_number, proposition_id, content_id,
-             min(CASE WHEN rule_type = 'Include' THEN matched ELSE 1 END) AS include_ok,
-             max(CASE WHEN rule_type = 'Exclude' THEN matched ELSE 0 END) AS exclude_hit
-      FROM rule_rows
-      GROUP BY business_contact_number, proposition_id, content_id
-    ),
+    WITH {eligible_content_ctes(state)},
     proposition_content AS (
       SELECT ec.business_contact_number, ec.proposition_id, ec.content_id, c.channel_code, c.last_updated_date,
              ms.model_score, p.proposition_weight,
@@ -63,7 +53,9 @@ def _build_simulation_sql(db: StatementExecutionClient) -> str:
     holdout_customers AS (
       SELECT DISTINCT business_contact_number
       FROM candidate_rows
-      WHERE rand(17) < {holdout_share}
+      -- one deterministic draw per customer: rand() per candidate row over-sampled the holdout (~26% vs 10%)
+      -- and could differ between the CTE's references
+      WHERE pmod(xxhash64(business_contact_number, 'merlin_holdout'), 10000) < {int(round(holdout_share * 10000))}
     ),
     exploit_base AS (
       SELECT * FROM candidate_rows WHERE overall_rank = 1 AND business_contact_number NOT IN (SELECT business_contact_number FROM holdout_customers)

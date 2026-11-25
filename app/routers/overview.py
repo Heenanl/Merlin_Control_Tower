@@ -12,7 +12,7 @@ router = APIRouter(prefix="/api", tags=["overview"])
 
 
 @router.get("/me")
-async def me(user: CurrentUser = Depends(current_user_dep)) -> dict:
+def me(user: CurrentUser = Depends(current_user_dep)) -> dict:
     return {
         "email": user.email,
         "preferred_username": user.preferred_username,
@@ -22,7 +22,7 @@ async def me(user: CurrentUser = Depends(current_user_dep)) -> dict:
 
 
 @router.get("/overview")
-async def overview(user: CurrentUser = Depends(current_user_dep)) -> dict:
+def overview(user: CurrentUser = Depends(current_user_dep)) -> dict:
     db = db_for_user(user)
     summary = db.execute_one(OVERVIEW_SQL) or {}
     return summary

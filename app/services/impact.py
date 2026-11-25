@@ -54,43 +54,70 @@ def _condition_text(sql_condition: str, metadata: Mapping[str, str]) -> str:
     return text
 
 
-def _rule_union_sql(state: Dict[str, List[Dict[str, Any]]]) -> str:
-    propositions = {row["proposition_id"]: row for row in state["proposition"] if row.get("active_ind", True)}
+def _active_mappings(state: Dict[str, List[Dict[str, Any]]]):
+    """(content_id, proposition_id, rule_id, rule_type) for active content of active propositions mapped to live rules."""
+    propositions = {row["proposition_id"] for row in state["proposition"] if row.get("active_ind", True)}
     content = {row["content_id"]: row for row in state["content"] if row.get("active_content_ind", True)}
     rules = {int(row["eligibility_rule_id"]): row for row in state["eligibility_rule"] if row.get("status") == "live"}
-    metadata = metadata_map(state["model_metadata"])
-    selects = []
+    mappings = []
     for mapping in state["content_eligibility_rule"]:
         if not mapping.get("active_ind", True):
             continue
         content_row = content.get(mapping["content_id"])
-        rule_row = rules.get(int(mapping["eligibility_rule_id"]))
-        if not content_row or not rule_row:
+        rule_id = int(mapping["eligibility_rule_id"])
+        if not content_row or rule_id not in rules or content_row["proposition_id"] not in propositions:
             continue
-        if content_row["proposition_id"] not in propositions:
-            continue
-        predicate = _condition_text(rule_row["sql_condition"], metadata)
-        selects.append(
-            f"SELECT cust.business_contact_number, {sql_literal(content_row['proposition_id'])} AS proposition_id, {sql_literal(content_row['content_id'])} AS content_id, {sql_literal(rule_row['eligibility_rule_type'])} AS rule_type, CASE WHEN {predicate} THEN 1 ELSE 0 END AS matched FROM {settings.fq_schema}.customer cust"
-        )
-    if not selects:
-        return f"SELECT cast(NULL AS STRING) AS business_contact_number, cast(NULL AS STRING) AS proposition_id, cast(NULL AS STRING) AS content_id, cast(NULL AS STRING) AS rule_type, cast(NULL AS INT) AS matched WHERE 1 = 0"
-    return "\nUNION ALL\n".join(selects)
+        mappings.append((content_row["content_id"], content_row["proposition_id"], rule_id, rules[rule_id]["eligibility_rule_type"]))
+    return mappings, rules
+
+
+def eligible_content_ctes(state: Dict[str, List[Dict[str, Any]]], prefix: str = "") -> str:
+    """CTEs ending in {prefix}eligible_content(business_contact_number, proposition_id, content_id, include_ok, exclude_hit).
+
+    Scans customer once: each distinct live rule is evaluated once per customer, then joined to the
+    content-rule mappings (instead of one full customer scan per mapping).
+    """
+    mappings, rules = _active_mappings(state)
+    if not mappings:
+        return f"""{prefix}eligible_content AS (
+      SELECT cast(NULL AS STRING) AS business_contact_number, cast(NULL AS STRING) AS proposition_id,
+             cast(NULL AS STRING) AS content_id, cast(NULL AS INT) AS include_ok, cast(NULL AS INT) AS exclude_hit
+      WHERE 1 = 0
+    )"""
+    metadata = metadata_map(state["model_metadata"])
+    rule_ids = sorted({m[2] for m in mappings})
+    structs = ",\n        ".join(
+        f"named_struct('rule_id', {rid}, 'matched', CASE WHEN {_condition_text(rules[rid]['sql_condition'], metadata)} THEN 1 ELSE 0 END)"
+        for rid in rule_ids
+    )
+    values = ",\n        ".join(
+        f"({sql_literal(c)}, {sql_literal(p)}, {rid}, {sql_literal(t)})" for c, p, rid, t in mappings
+    )
+    return f"""{prefix}rule_hits AS (
+      SELECT cust.business_contact_number, h.rule_id, h.matched
+      FROM {settings.fq_schema}.customer cust
+      LATERAL VIEW inline(array(
+        {structs}
+      )) h
+    ),
+    {prefix}mappings AS (
+      SELECT * FROM VALUES
+        {values}
+      AS m(content_id, proposition_id, rule_id, rule_type)
+    ),
+    {prefix}eligible_content AS (
+      SELECT rh.business_contact_number, m.proposition_id, m.content_id,
+             min(CASE WHEN m.rule_type = 'Include' THEN rh.matched ELSE 1 END) AS include_ok,
+             max(CASE WHEN m.rule_type = 'Exclude' THEN rh.matched ELSE 0 END) AS exclude_hit
+      FROM {prefix}rule_hits rh
+      JOIN {prefix}mappings m ON m.rule_id = rh.rule_id
+      GROUP BY rh.business_contact_number, m.proposition_id, m.content_id
+    )"""
 
 
 def _eligible_count_sql(state: Dict[str, List[Dict[str, Any]]], alias: str) -> str:
-    union_sql = _rule_union_sql(state)
     return f"""
-    {alias}_rule_rows AS (
-      {union_sql}
-    ),
-    {alias}_eligible_content AS (
-      SELECT business_contact_number, proposition_id, content_id,
-             min(CASE WHEN rule_type = 'Include' THEN matched ELSE 1 END) AS include_ok,
-             max(CASE WHEN rule_type = 'Exclude' THEN matched ELSE 0 END) AS exclude_hit
-      FROM {alias}_rule_rows
-      GROUP BY business_contact_number, proposition_id, content_id
-    ),
+    {eligible_content_ctes(state, f"{alias}_")},
     {alias}_eligible_prop AS (
       SELECT proposition_id, count(DISTINCT business_contact_number) AS eligible_customers
       FROM {alias}_eligible_content

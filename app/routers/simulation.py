@@ -10,7 +10,7 @@ router = APIRouter(prefix="/api/simulation", tags=["simulation"])
 
 
 @router.get("/summary")
-async def summary(user: CurrentUser = Depends(current_user_dep)) -> dict:
+def summary(user: CurrentUser = Depends(current_user_dep)) -> dict:
     db = db_for_user(user)
     return simulation_summary(db)
 

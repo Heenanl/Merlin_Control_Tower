@@ -16,12 +16,12 @@ router = APIRouter(prefix="/api", tags=["config"])
 
 
 @router.get("/config/tables")
-async def config_tables(user: CurrentUser = Depends(current_user_dep)) -> dict:
+def config_tables(user: CurrentUser = Depends(current_user_dep)) -> dict:
     return {"tables": sorted(table_names())}
 
 
 @router.get("/config/{table_name}")
-async def config_rows(
+def config_rows(
     table_name: str,
     limit: int = Query(500, ge=1, le=5000),
     user: CurrentUser = Depends(current_user_dep),
@@ -33,7 +33,7 @@ async def config_rows(
 
 
 @router.post("/config/{table_name}/draft")
-async def draft_table_change(
+def draft_table_change(
     table_name: str,
     payload: dict = Body(...),
     user: CurrentUser = Depends(current_user_dep),
@@ -62,7 +62,7 @@ async def draft_table_change(
 
 
 @router.post("/config/{table_name}/bulk-draft")
-async def draft_bulk_table_change(
+def draft_bulk_table_change(
     table_name: str,
     payload: dict = Body(...),
     user: CurrentUser = Depends(current_user_dep),
@@ -88,14 +88,14 @@ async def draft_bulk_table_change(
 
 
 @router.get("/matrix")
-async def rule_content_matrix(user: CurrentUser = Depends(current_user_dep)) -> dict:
+def rule_content_matrix(user: CurrentUser = Depends(current_user_dep)) -> dict:
     db = db_for_user(user)
     rows = db.execute(RULE_MATRIX_SQL, wait_s=60, row_limit=10_000)
     return {"rows": rows}
 
 
 @router.post("/matrix/toggle")
-async def toggle_matrix_mapping(payload: dict = Body(...), user: CurrentUser = Depends(current_user_dep)) -> dict:
+def toggle_matrix_mapping(payload: dict = Body(...), user: CurrentUser = Depends(current_user_dep)) -> dict:
     user.require_any({"drafter", "approver"})
     db = db_for_user(user)
     key = {"content_id": payload["content_id"], "eligibility_rule_id": payload["eligibility_rule_id"]}
@@ -116,7 +116,7 @@ async def toggle_matrix_mapping(payload: dict = Body(...), user: CurrentUser = D
 
 
 @router.post("/rules/proposition-wizard")
-async def proposition_wizard(payload: dict = Body(...), user: CurrentUser = Depends(current_user_dep)) -> dict:
+def proposition_wizard(payload: dict = Body(...), user: CurrentUser = Depends(current_user_dep)) -> dict:
     user.require_any({"drafter", "approver"})
     db = db_for_user(user)
     max_rule = int(db.execute_scalar(f"SELECT coalesce(max(eligibility_rule_id), 1000) FROM {settings.fq_schema}.eligibility_rule WHERE eligibility_rule_id < 10000", default=1000))
@@ -183,6 +183,6 @@ async def proposition_wizard(payload: dict = Body(...), user: CurrentUser = Depe
 
 
 @router.get("/history/{object_type}/{object_id}")
-async def history(object_type: str, object_id: str, user: CurrentUser = Depends(current_user_dep)) -> dict:
+def history(object_type: str, object_id: str, user: CurrentUser = Depends(current_user_dep)) -> dict:
     db = db_for_user(user)
     return {"rows": record_history(db, object_type, object_id)}

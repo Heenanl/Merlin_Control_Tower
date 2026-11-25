@@ -9,7 +9,7 @@ from app.db import StatementExecutionClient, sql_literal
 from app.settings import settings
 
 
-async def current_user_dep(user: CurrentUser = Depends(forwarded_identity)) -> CurrentUser:
+def current_user_dep(user: CurrentUser = Depends(forwarded_identity)) -> CurrentUser:
     return user
 
 
