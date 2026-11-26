@@ -182,7 +182,9 @@ def sql_literal(value: Any) -> str:
         return f"DATE '{value.isoformat()}'"
     if isinstance(value, (dict, list)):
         value = json.dumps(value)
-    text = str(value).replace("'", "''")
+    # Databricks SQL joins adjacent literals ('a''b' -> 'ab'), so doubling quotes silently drops them.
+    # Escape with backslashes instead (backslash first).
+    text = str(value).replace("\\", "\\\\").replace("'", "\\'")
     return f"'{text}'"
 
 
