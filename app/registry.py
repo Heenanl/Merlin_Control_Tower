@@ -108,6 +108,7 @@ RULE_MATRIX_SQL = f"""
 SELECT
   c.content_id,
   c.proposition_id,
+  p.name AS proposition_name,
   c.language_code,
   c.channel_code,
   c.message_type,
@@ -123,6 +124,7 @@ SELECT
   c.updated_at AS content_updated_at,
   r.updated_at AS rule_updated_at
 FROM {settings.fq_schema}.content c
+LEFT JOIN {settings.fq_schema}.proposition p ON p.proposition_id = c.proposition_id
 CROSS JOIN {settings.fq_schema}.eligibility_rule r
 LEFT JOIN {settings.fq_schema}.content_eligibility_rule cer
   ON cer.content_id = c.content_id AND cer.eligibility_rule_id = r.eligibility_rule_id
