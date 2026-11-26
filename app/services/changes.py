@@ -54,6 +54,9 @@ def prepare_operations(db: StatementExecutionClient, operations: Iterable[Mappin
         if action == "insert":
             validate_row(table_name, after, for_create=True)
             key = {k: after[k] for k in spec.primary_keys}
+            # Delta primary keys are informational, so reject duplicates here
+            if load_row(db, table_name, key):
+                raise HTTPException(status_code=409, detail=f"{table_name} already has a row with {key}; choose a new ID")
             before = None
         else:
             before = deepcopy(op.get("before") or load_row(db, table_name, key) or {})
@@ -235,7 +238,12 @@ def _write_sql(op: Mapping[str, Any], actor_email: str, col_types: Mapping[str, 
         values.update(_metadata_assignments(actor_email, is_insert=True))
         values = {c: v for c, v in values.items() if c in col_types}
         cols = [sql_ident(c) for c in values]
-        return f"INSERT INTO {qualify(table_name)} ({comma_list(cols)}) VALUES ({comma_list(values.values())})"
+        exists_check = f"""
+    IF (SELECT count(*) FROM {qualify(table_name)} WHERE {where_eq(key)}) > 0 THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = {sql_literal(f"MERLIN_DUPLICATE: {table_name} already has {key}")};
+    END IF;
+    """
+        return f"{exists_check} INSERT INTO {qualify(table_name)} ({comma_list(cols)}) VALUES ({comma_list(values.values())})"
 
     if action in {"update", "soft_delete"}:
         allowed = set(spec.editable_columns) - set(spec.primary_keys)
