@@ -11,3 +11,12 @@ env:
   # Populated from the app's SQL warehouse resource (resource key: sql-warehouse)
   - name: DATABRICKS_WAREHOUSE_ID
     valueFrom: sql-warehouse
+  # Lakebase (main config store). PGHOST/PGPORT/PGUSER are injected by the `postgres` resource;
+  # LAKEBASE_ENDPOINT is the endpoint path used to mint OAuth credentials.
+  - name: LAKEBASE_ENDPOINT
+    valueFrom: postgres
+  - name: MERLIN_PG_DATABASE
+    value: merlin_demo
+  # Read backend for browsers that have not used the UC / Lakebase toggle yet: uc or lakebase
+  - name: MERLIN_DEFAULT_BACKEND
+    value: lakebase

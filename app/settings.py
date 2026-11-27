@@ -18,6 +18,16 @@ class AppSettings:
         or ""
     )
     source_system: str = "merlin_control_tower"
+    # Lakebase (Postgres): PG* variables are injected by the app's `postgres` resource;
+    # LAKEBASE_ENDPOINT comes from app.yaml (valueFrom: postgres). Database and schema mirror catalog/schema.
+    pg_host: str = os.getenv("PGHOST", "")
+    pg_port: int = int(os.getenv("PGPORT", "5432"))
+    pg_database: str = os.getenv("MERLIN_PG_DATABASE", os.getenv("MERLIN_CATALOG", "merlin_demo"))
+    pg_schema: str = os.getenv("MERLIN_SCHEMA", "merlin_demo")
+    pg_user: str = os.getenv("PGUSER", "")
+    lakebase_endpoint: str = os.getenv("LAKEBASE_ENDPOINT", "")
+    # Backend used when the browser has not picked one with the toggle: uc or lakebase
+    default_backend: str = os.getenv("MERLIN_DEFAULT_BACKEND", "lakebase")
     # DEMO ONLY: lets one person draft and approve the same request. Off unless explicitly enabled.
     allow_self_approval: bool = os.getenv("MERLIN_ALLOW_SELF_APPROVAL", "false").strip().lower() == "true"
     stale_content_days: int = 300
@@ -71,7 +81,7 @@ class AppSettings:
     enum_values: Dict[str, List[str]] = field(
         default_factory=lambda: {
             "message_type": ["tip", "offer"],
-            "channel_code": ["email", "bank_mail"],
+            "channel_code": ["email", "push", "in_app", "sms"],
             "language_code": ["NL", "EN"],
             "eligibility_rule_level": [
                 "customer_segment",

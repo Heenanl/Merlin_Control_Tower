@@ -5,7 +5,7 @@ from typing import Any, Dict, Mapping
 from fastapi import Depends
 
 from app.auth import CurrentUser, forwarded_identity
-from app.db import StatementExecutionClient, sql_literal
+from app.db import ConfigClient, StatementExecutionClient, sql_literal
 from app.settings import settings
 
 
@@ -13,8 +13,9 @@ def current_user_dep(user: CurrentUser = Depends(forwarded_identity)) -> Current
     return user
 
 
-def db_for_user(user: CurrentUser) -> StatementExecutionClient:
-    return StatementExecutionClient(user.access_token)
+def db_for_user(user: CurrentUser) -> ConfigClient:
+    """Reads follow the user's backend toggle; writes always go to Lakebase and UC together."""
+    return ConfigClient(user.access_token, user.backend)
 
 
 def dependency_summary(db: StatementExecutionClient, table_name: str, key: Mapping[str, Any]) -> Dict[str, Any]:

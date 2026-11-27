@@ -14,6 +14,9 @@ from app.settings import settings
 
 router = APIRouter(prefix="/api", tags=["config"])
 
+# Consent each channel needs (matches the setup notebook)
+CHANNEL_OPTIN = {"email": "OPT_EMAIL_MARKETING", "push": "OPT_PUSH_MARKETING", "in_app": "OPT_INAPP_SERVICE", "sms": "OPT_SMS_MARKETING"}
+
 
 @router.get("/config/tables")
 def config_tables(user: CurrentUser = Depends(current_user_dep)) -> dict:
@@ -145,7 +148,7 @@ def proposition_wizard(payload: dict = Body(...), user: CurrentUser = Depends(cu
                 "message_type": payload.get("message_type", "offer"),
                 "proposition_id": proposition_id,
                 "channel_code": payload.get("channel_code", "email"),
-                "optin_id": payload.get("optin_id", "OPT_EMAIL_MARKETING"),
+                "optin_id": payload.get("optin_id") or CHANNEL_OPTIN.get(payload.get("channel_code", "email"), "OPT_EMAIL_MARKETING"),
                 "language_code": payload.get("language_code", "NL"),
                 "customer_segment_id": payload.get("customer_segment_id", "ALL"),
                 "content_frequency": payload.get("content_frequency", 1),

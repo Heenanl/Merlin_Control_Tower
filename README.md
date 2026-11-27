@@ -14,11 +14,11 @@ Run `setup/merlin_demo_setup` on serverless. It creates `merlin_demo.merlin_demo
 | Table | Rows | Purpose |
 | --- | --- | --- |
 | `proposition` | 12 | Products (cards, savings, mortgages, investments, pensions, insurance, loans) with `proposition_weight` |
-| `content` | 40 | Tips and offers per proposition and channel; 25% older than 300 days |
-| `eligibility_rule` | 30 | Include/exclude rules with `sql_condition`; IDs >= 10000 are per-proposition recently-contacted exclusions |
+| `content` | 36 | Tips and offers on email, push, in_app and sms: P001, P002, P006, P008, P009 and P012 on all 4 channels, the others on 2; 25% older than 300 days |
+| `eligibility_rule` | 32 | Include/exclude rules with `sql_condition`; IDs >= 10000 are per-proposition recently-contacted exclusions |
 | `eligibility_rule_set` | 13 | Rule memberships of 6 named rule sets |
-| `content_eligibility_rule` | 280 | Content to rule mappings (many-to-many) |
-| `customer` | 50,000 | Segment, age band, income band, email opt-in, owned products |
+| `content_eligibility_rule` | 262 | Content to rule mappings (many-to-many) |
+| `customer` | 50,000 | Segment, age band, income band, email / push / SMS opt-in, mobile app user, owned products |
 | `model_score` | 600,000 | Propensity score per customer and proposition (`MERLIN_PROP_V3`) |
 | `model_metadata` | 8 | weekly_cap, reference_population, exploit/explore/holdout shares, followup_after_days, active_model_id, score_threshold |
 | `next_best_experience`, `contact_decision_output` | 0 | Filled by the simulation |

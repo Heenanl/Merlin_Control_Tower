@@ -1,15 +1,37 @@
 from __future__ import annotations
 
 import json
+import re
+import threading
 import time
-from datetime import date, datetime
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
+from contextvars import ContextVar
+from dataclasses import dataclass
+from datetime import date, datetime, timezone
+from decimal import Decimal
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Union
 from uuid import uuid4
 
 import requests
 from fastapi import HTTPException
 
 from app.settings import settings
+
+
+# --- per-request latency tracking --------------------------------------------------------------
+# The middleware in main.py starts a list per request; every statement appends (backend, kind, ms).
+_timings: ContextVar[Optional[list]] = ContextVar("merlin_db_timings", default=None)
+
+
+def start_timing() -> list:
+    timings: list = []
+    _timings.set(timings)
+    return timings
+
+
+def record_timing(backend: str, kind: str, ms: float) -> None:
+    timings = _timings.get()
+    if timings is not None:
+        timings.append((backend, kind, round(ms, 1)))
 
 
 class StatementExecutionClient:
@@ -32,7 +54,16 @@ class StatementExecutionClient:
         self.base_url = host if host.startswith("http") else f"https://{host}"
         self.headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
 
+    backend = "uc"
+
     def execute(self, statement: str, *, wait_s: int = 30, row_limit: int = 5000) -> List[Dict[str, Any]]:
+        started = time.perf_counter()
+        try:
+            return self._execute(statement, wait_s=wait_s, row_limit=row_limit)
+        finally:
+            record_timing("uc", "write" if _WRITE_LABEL_RE.match(statement) else "read", (time.perf_counter() - started) * 1000)
+
+    def _execute(self, statement: str, *, wait_s: int = 30, row_limit: int = 5000) -> List[Dict[str, Any]]:
         payload = {
             "statement": statement,
             "warehouse_id": settings.warehouse_id,
@@ -218,3 +249,237 @@ def comma_list(items: Iterable[str]) -> str:
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex}"
+
+
+# --- Lakebase (Postgres) store -------------------------------------------------------------------
+# Lakebase is the app's main store for config, change requests and the audit log. Unity Catalog keeps a
+# mirror of the same tables because the simulation joins them with customers, scores and contact history.
+# The app's SQL is written in Databricks syntax; the Lakebase schema adds `string`/`double` domains and a
+# datediff() function, and each session accepts backslash escapes, so the same statement text runs on both.
+
+_WRITE_RE = re.compile(r"^\s*(INSERT|UPDATE|DELETE|MERGE)\b", re.IGNORECASE)
+_WRITE_LABEL_RE = re.compile(r"^\s*(INSERT|UPDATE|DELETE|MERGE|BEGIN)\b", re.IGNORECASE)  # timing label only
+# Tables that only exist in Unity Catalog: statements touching them always run on the SQL warehouse.
+_UC_ONLY_RE = re.compile(r"\.(customer|model_score|contact_decision_output|next_best_experience)\b", re.IGNORECASE)
+_SESSION_SETTINGS = [
+    "SET search_path = {schema}, public",
+    "SET standard_conforming_strings = off",  # Databricks-style backslash escapes in literals
+    "SET escape_string_warning = off",
+    "SET TIME ZONE 'UTC'",
+    "SET statement_timeout = '60s'",
+]
+
+
+def _to_postgres(statement: str) -> str:
+    return statement.replace("current_timestamp()", "current_timestamp").replace("current_date()", "current_date")
+
+
+def _json_value(value: Any) -> Any:
+    """Match the warehouse client's JSON output so pages behave the same on both backends."""
+    if isinstance(value, datetime):
+        if value.tzinfo:
+            value = value.astimezone(timezone.utc).replace(tzinfo=None)
+        return value.isoformat(timespec="milliseconds") + "Z"
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return float(value)
+    return value
+
+
+class LakebaseStore:
+    """Process-wide psycopg3 pool. Connects as the app service principal (PGUSER) with a fresh Lakebase
+    OAuth credential per new connection; connections are recycled before the 1-hour token expiry."""
+
+    _pool = None
+    _lock = threading.Lock()
+
+    @staticmethod
+    def configured() -> bool:
+        return bool(settings.pg_host and settings.lakebase_endpoint)
+
+    @classmethod
+    def pool(cls):
+        if cls._pool is not None:
+            return cls._pool
+        with cls._lock:
+            if cls._pool is None:
+                import psycopg
+                from databricks.sdk import WorkspaceClient
+                from psycopg_pool import ConnectionPool
+
+                workspace = WorkspaceClient()
+                endpoint = settings.lakebase_endpoint
+
+                class TokenConnection(psycopg.Connection):
+                    @classmethod
+                    def connect(cls_, conninfo: str = "", **kwargs):
+                        kwargs["password"] = workspace.postgres.generate_database_credential(endpoint=endpoint).token
+                        return super().connect(conninfo, **kwargs)
+
+                def configure(conn) -> None:
+                    for setting in _SESSION_SETTINGS:
+                        conn.execute(setting.format(schema=settings.pg_schema))
+                    conn.commit()
+
+                cls._pool = ConnectionPool(
+                    conninfo="",
+                    connection_class=TokenConnection,
+                    kwargs={
+                        "host": settings.pg_host,
+                        "port": settings.pg_port,
+                        "dbname": settings.pg_database,
+                        "user": settings.pg_user,
+                        "sslmode": "require",
+                    },
+                    configure=configure,
+                    check=ConnectionPool.check_connection,  # survives scale-to-zero restarts
+                    min_size=1,
+                    max_size=8,
+                    max_lifetime=2700,
+                    open=True,
+                )
+        return cls._pool
+
+
+def _pg_rows(cursor) -> List[Dict[str, Any]]:
+    if cursor.description is None:
+        return []
+    names = [d.name for d in cursor.description]
+    return [{n: _json_value(v) for n, v in zip(names, row)} for row in cursor.fetchall()]
+
+
+def lakebase_query(statement: str, *, row_limit: int = 5000) -> List[Dict[str, Any]]:
+    started = time.perf_counter()
+    try:
+        with LakebaseStore.pool().connection() as conn:
+            cur = conn.execute(_to_postgres(statement))
+            rows = _pg_rows(cur)
+            return rows[:row_limit]
+    except HTTPException:
+        raise
+    except Exception as exc:  # surface Postgres errors like warehouse errors
+        raise HTTPException(status_code=400, detail=f"Lakebase: {exc}") from exc
+    finally:
+        record_timing("lakebase", "write" if _WRITE_RE.match(statement) else "read", (time.perf_counter() - started) * 1000)
+
+
+@dataclass(frozen=True)
+class Guard:
+    """Abort a guarded write unless `count_sql` returns exactly `expected`."""
+
+    count_sql: str
+    expected: int
+    message: str
+
+    def databricks_sql(self) -> str:
+        return (
+            f"IF ({self.count_sql}) <> {self.expected} THEN "
+            f"SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = {sql_literal(self.message)}; END IF;"
+        )
+
+
+Step = Union[Guard, str]
+
+
+class ConfigClient:
+    """DB client used by every request.
+
+    * Reads go to the backend chosen with the UI toggle (header X-Merlin-Backend): `uc` (SQL warehouse) or
+      `lakebase`. Statements on UC-only tables (customers, scores, contact history) always use the warehouse.
+    * Writes always land in both stores in one unit: open a Lakebase transaction, apply the change there,
+      apply it to UC (one BEGIN ATOMIC), then commit Lakebase. If UC fails, Lakebase rolls back.
+      Both stores get the same timestamp literal, so they stay identical row for row.
+    """
+
+    def __init__(self, access_token: str, backend: str = "uc"):
+        self.uc = StatementExecutionClient(access_token)
+        self.lakebase_available = LakebaseStore.configured()
+        self.backend = "lakebase" if backend == "lakebase" and self.lakebase_available else "uc"
+
+    # --- reads ------------------------------------------------------------------------------------
+    def execute(self, statement: str, *, wait_s: int = 30, row_limit: int = 5000) -> List[Dict[str, Any]]:
+        if _WRITE_RE.match(statement):
+            self.run_guarded([statement], wait_s=wait_s)
+            return []
+        if self.backend == "lakebase" and not _UC_ONLY_RE.search(statement):
+            return lakebase_query(statement, row_limit=row_limit)
+        return self.uc.execute(statement, wait_s=wait_s, row_limit=row_limit)
+
+    def execute_one(self, statement: str) -> Optional[Dict[str, Any]]:
+        rows = self.execute(statement, row_limit=1)
+        return rows[0] if rows else None
+
+    def execute_scalar(self, statement: str, *, default: Any = None) -> Any:
+        row = self.execute_one(statement)
+        if not row:
+            return default
+        return next(iter(row.values()), default)
+
+    # The simulation runs on the warehouse (it needs customers and scores).
+    def submit(self, statement: str) -> str:
+        return self.uc.submit(statement)
+
+    def get_statement_result(self, statement_id: str) -> Dict[str, Any]:
+        return self.uc.get_statement_result(statement_id)
+
+    _column_type_cache: Dict[str, Dict[str, str]] = {}
+
+    def column_types(self, table: str) -> Dict[str, str]:
+        # Same schema in both stores; UC types also work in Lakebase (string/double are domains there).
+        if table not in ConfigClient._column_type_cache:
+            ConfigClient._column_type_cache[table] = self.uc.column_types(table)
+        return ConfigClient._column_type_cache[table]
+
+    # --- writes -----------------------------------------------------------------------------------
+    def run_guarded(self, steps: Sequence[Step], *, wait_s: int = 60) -> None:
+        """Apply guards + DML atomically to Lakebase and UC."""
+        now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(sep=" ", timespec="milliseconds")
+        pin = lambda sql: sql.replace("current_timestamp()", f"TIMESTAMP '{now}'").replace("current_date()", f"DATE '{now[:10]}'")
+        steps = [Guard(pin(s.count_sql), s.expected, s.message) if isinstance(s, Guard) else pin(s) for s in steps]
+
+        def uc_write() -> None:
+            if len(steps) == 1 and isinstance(steps[0], str):
+                self.uc.execute(steps[0], wait_s=wait_s)
+                return
+            body = "\n  ".join(s.databricks_sql() if isinstance(s, Guard) else s.rstrip().rstrip(";") + ";" for s in steps)
+            self.uc.execute(f"BEGIN ATOMIC\n  {body}\nEND;", wait_s=wait_s)
+
+        if not self.lakebase_available:
+            uc_write()
+            return
+        started = time.perf_counter()
+        try:
+            with LakebaseStore.pool().connection() as conn:
+                with conn.transaction():
+                    # serialise config writers so guards and writes see a stable state
+                    conn.execute("SELECT pg_advisory_xact_lock(hashtext('merlin_config_write'))")
+                    for step in steps:
+                        if isinstance(step, Guard):
+                            count = conn.execute(_to_postgres(step.count_sql)).fetchone()[0]
+                            if int(count) != step.expected:
+                                raise HTTPException(status_code=409, detail=step.message)
+                        else:
+                            conn.execute(_to_postgres(step))
+                    lakebase_ms = (time.perf_counter() - started) * 1000
+                    record_timing("lakebase", "write", lakebase_ms)
+                    uc_write()  # raises -> the Lakebase transaction rolls back
+                    commit_started = time.perf_counter()
+                record_timing("lakebase", "commit", (time.perf_counter() - commit_started) * 1000)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Lakebase: {exc}") from exc
+
+    def record_simulation_run(self, latest: Mapping[str, Any]) -> None:
+        """Copy the last run timestamp to Lakebase so the overview can show it without touching UC."""
+        if not self.lakebase_available or not latest.get("run_timestamp"):
+            return
+        sql = (
+            f"INSERT INTO {settings.pg_schema}.simulation_status VALUES (1, {sql_literal(latest['run_timestamp'])}, "
+            f"{sql_literal(latest.get('snapshotdate'))}, current_timestamp, {sql_literal(settings.source_system)}) "
+            "ON CONFLICT (id) DO UPDATE SET last_simulation_run = EXCLUDED.last_simulation_run, "
+            "last_snapshotdate = EXCLUDED.last_snapshotdate, audit_timestamp = EXCLUDED.audit_timestamp"
+        )
+        with LakebaseStore.pool().connection() as conn:
+            conn.execute(sql)

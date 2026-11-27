@@ -7,21 +7,60 @@
     <link rel="stylesheet" href="/static/css/styles.css" />
   </head>
   <body>
-    <header class="shell-header">
-      <div>
-        <h1>Merlin Control Tower</h1>
-        <p>ABN AMRO hyperpersonalisation demo: governed self-service config changes for Merlin.</p>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <button type="button" class="brand" data-goto="overview" aria-label="Merlin Control Tower home">
+          <svg class="brand-mark" viewBox="0 0 28 32" aria-hidden="true">
+            <path d="M14 1 L27 8 V24 L14 31 Z" fill="#00857A" />
+            <path d="M14 1 L1 8 V24 L14 31 Z" fill="#FFD200" />
+            <path d="M14 9 L20 12.5 V20 L14 23.5 Z" fill="#004C4C" />
+          </svg>
+          <span class="brand-name">ABN·AMRO</span>
+          <span class="brand-divider" aria-hidden="true"></span>
+          <span class="brand-sub">Merlin Control Tower</span>
+        </button>
+        <div class="topbar-right">
+          <div class="backend-toggle" role="radiogroup" aria-label="Database for reads">
+            <span class="backend-label">Data source</span>
+            <button type="button" data-backend="uc" role="radio">Unity Catalog</button>
+            <button type="button" data-backend="lakebase" role="radio">Lakebase</button>
+          </div>
+          <button type="button" id="latency-pill" class="latency-pill" title="Database time of the last request. Click for the comparison.">DB time –</button>
+          <div id="user-pill" class="user-pill">Loading user…</div>
+        </div>
       </div>
-      <div id="user-pill" class="user-pill">Loading user…</div>
+      <div class="menubar">
+        <nav class="tabs">
+          <button data-page="overview" class="tab is-active">Home</button>
+          <button data-page="matrix" class="tab">Rule × Content</button>
+          <button data-page="rules" class="tab">Rules &amp; Propositions</button>
+          <button data-page="changeRequests" class="tab">Change requests</button>
+          <button data-page="simulation" class="tab">Run simulation</button>
+          <button data-page="latency" class="tab">UC vs Lakebase</button>
+        </nav>
+        <button type="button" class="icon-button" id="menu-search" aria-label="Search content" title="Search content">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2.2" /><path d="M15.5 15.5 L21 21" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" /></svg>
+        </button>
+      </div>
     </header>
 
-    <nav class="tabs">
-      <button data-page="overview" class="tab is-active">Overview</button>
-      <button data-page="matrix" class="tab">Rule × Content matrix</button>
-      <button data-page="rules" class="tab">Rules &amp; Propositions</button>
-      <button data-page="changeRequests" class="tab">Change requests</button>
-      <button data-page="simulation" class="tab">Run simulation</button>
-    </nav>
+    <section class="hero">
+      <div class="hero-inner">
+        <div class="hero-copy">
+          <h1 id="hero-title">Governed changes for Merlin</h1>
+          <p class="hero-sub">Draft, approve and promote next-best-action config with a full audit trail</p>
+          <button type="button" class="button primary hero-cta" data-goto="changeRequests">Review change requests</button>
+        </div>
+        <div class="greeting-card">
+          <h2 id="greeting">Welcome,</h2>
+          <p>What would you like to change today?</p>
+          <form id="hero-search" class="hero-search" role="search">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2.2" /><path d="M15.5 15.5 L21 21" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" /></svg>
+            <input id="hero-search-input" type="search" placeholder="Search content or proposition…" aria-label="Search content or proposition" />
+          </form>
+        </div>
+      </div>
+    </section>
 
     <main class="shell-main">
       <section id="alerts"></section>

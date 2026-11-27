@@ -151,6 +151,20 @@ SELECT
 """
 
 
+# Lakebase has no contact history (that stays in UC); the last run is copied to simulation_status.
+OVERVIEW_SQL_LAKEBASE = OVERVIEW_SQL.replace(
+    f"""SELECT max(run_timestamp) AS last_simulation_run, max(snapshotdate) AS last_snapshotdate
+  FROM {settings.fq_schema}.contact_decision_output""",
+    f"""SELECT max(last_simulation_run) AS last_simulation_run, max(last_snapshotdate) AS last_snapshotdate
+  FROM {settings.fq_schema}.simulation_status""",
+)
+assert OVERVIEW_SQL_LAKEBASE != OVERVIEW_SQL
+
+
+def overview_sql(backend: str) -> str:
+    return OVERVIEW_SQL_LAKEBASE if backend == "lakebase" else OVERVIEW_SQL
+
+
 def get_table(table_name: str) -> TableSpec:
     if table_name not in TABLES:
         raise HTTPException(status_code=400, detail=f"Unsupported table: {table_name}")

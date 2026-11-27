@@ -122,7 +122,10 @@ def poll_simulation_status(db: StatementExecutionClient, statement_id: str) -> D
     """Check status of a submitted simulation statement; returns summary when done."""
     result = db.get_statement_result(statement_id)
     if result["state"] == "SUCCEEDED":
-        return {"status": "SUCCEEDED", **simulation_summary(db)}
+        summary = simulation_summary(db)
+        if hasattr(db, "record_simulation_run"):
+            db.record_simulation_run(summary["latest"])  # lets the Lakebase overview show the last run
+        return {"status": "SUCCEEDED", **summary}
     return {"status": result["state"]}
 
 

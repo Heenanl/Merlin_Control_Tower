@@ -8,7 +8,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional
 from fastapi import HTTPException
 
 from app.auth import CurrentUser
-from app.db import StatementExecutionClient, comma_list, new_id, qualify, row_to_json, sql_ident, sql_literal, typed_literal, where_eq
+from app.db import Guard, StatementExecutionClient, comma_list, new_id, qualify, row_to_json, sql_ident, sql_literal, typed_literal, where_eq
 from app.registry import TABLES, get_table
 from app.services.dependencies import dependency_summary
 from app.services.validation import validate_keys, validate_row, validate_share_sum
@@ -212,19 +212,21 @@ def _metadata_assignments(actor_email: str, *, is_insert: bool) -> Dict[str, str
     return assignments
 
 
-def _before_version_check(op: Mapping[str, Any]) -> str:
+def _before_version_check(op: Mapping[str, Any]) -> List[Guard]:
     before = op.get("before") or {}
     if not before or "version" not in before:
-        return ""
-    return f"""
-    IF (SELECT count(*) FROM {qualify(op['table'])} WHERE {where_eq(op['key'])} AND version = {sql_literal(before['version'])}) <> 1 THEN
-      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = {sql_literal(f"MERLIN_STALE: {op['table']} changed since draft")};
-    END IF;
-    """
+        return []
+    return [
+        Guard(
+            f"SELECT count(*) FROM {qualify(op['table'])} WHERE {where_eq(op['key'])} AND version = {sql_literal(before['version'])}",
+            1,
+            f"MERLIN_STALE: {op['table']} changed since draft",
+        )
+    ]
 
 
-def _write_sql(op: Mapping[str, Any], actor_email: str, col_types: Mapping[str, str]) -> str:
-    """Build the DML for one operation. Business values are CAST to the real column type; system
+def _write_sql(op: Mapping[str, Any], actor_email: str, col_types: Mapping[str, str]) -> tuple[List[Guard], str]:
+    """Build the guards and DML for one operation. Business values are CAST to the real column type; system
     columns (created_*/updated_*/version/audit_timestamp/source_system) are always set server-side."""
     table_name = op["table"]
     action = op["op"]
@@ -238,12 +240,12 @@ def _write_sql(op: Mapping[str, Any], actor_email: str, col_types: Mapping[str, 
         values.update(_metadata_assignments(actor_email, is_insert=True))
         values = {c: v for c, v in values.items() if c in col_types}
         cols = [sql_ident(c) for c in values]
-        exists_check = f"""
-    IF (SELECT count(*) FROM {qualify(table_name)} WHERE {where_eq(key)}) > 0 THEN
-      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = {sql_literal(f"MERLIN_DUPLICATE: {table_name} already has {key}")};
-    END IF;
-    """
-        return f"{exists_check} INSERT INTO {qualify(table_name)} ({comma_list(cols)}) VALUES ({comma_list(values.values())})"
+        exists_check = Guard(
+            f"SELECT count(*) FROM {qualify(table_name)} WHERE {where_eq(key)}",
+            0,
+            f"MERLIN_DUPLICATE: {table_name} already has {key}",
+        )
+        return [exists_check], f"INSERT INTO {qualify(table_name)} ({comma_list(cols)}) VALUES ({comma_list(values.values())})"
 
     if action in {"update", "soft_delete"}:
         allowed = set(spec.editable_columns) - set(spec.primary_keys)
@@ -251,10 +253,10 @@ def _write_sql(op: Mapping[str, Any], actor_email: str, col_types: Mapping[str, 
         values.update(_metadata_assignments(actor_email, is_insert=False))
         values = {c: v for c, v in values.items() if c in col_types}
         set_sql = comma_list(f"{sql_ident(c)} = {v}" for c, v in values.items())
-        return f"{_before_version_check(op)} UPDATE {qualify(table_name)} SET {set_sql} WHERE {where_eq(key)}"
+        return _before_version_check(op), f"UPDATE {qualify(table_name)} SET {set_sql} WHERE {where_eq(key)}"
 
     if action == "hard_delete":
-        return f"{_before_version_check(op)} DELETE FROM {qualify(table_name)} WHERE {where_eq(key)}"
+        return _before_version_check(op), f"DELETE FROM {qualify(table_name)} WHERE {where_eq(key)}"
 
     raise HTTPException(status_code=400, detail=f"Unsupported operation: {action}")
 
@@ -267,28 +269,34 @@ def promote_request(db: StatementExecutionClient, request_id: str, user: Current
     if (req.get("approved_by") or "").lower() != user.email.lower():
         raise HTTPException(status_code=403, detail="Only the approver who approved this request can promote it")
 
-    statements = [
-        f"IF (SELECT count(*) FROM {settings.fq_schema}.change_request WHERE request_id = {sql_literal(request_id)} AND status = 'approved') <> 1 THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'MERLIN_INVALID_STATUS'; END IF;"
+    statements: list = [
+        Guard(
+            f"SELECT count(*) FROM {settings.fq_schema}.change_request WHERE request_id = {sql_literal(request_id)} AND status = 'approved'",
+            1,
+            "MERLIN_INVALID_STATUS",
+        )
     ]
     audit_rows = []
     type_cache: Dict[str, Dict[str, str]] = {}
     for op in req["operations"]:
         if op["table"] not in type_cache:
             type_cache[op["table"]] = db.column_types(op["table"])
-        statements.append(_write_sql(op, user.email, type_cache[op["table"]]) + ";")
+        guards, dml = _write_sql(op, user.email, type_cache[op["table"]])
+        statements.extend(guards)
+        statements.append(dml)
         audit_rows.append(
             f"({sql_literal(new_id('audit'))}, {sql_literal(request_id)}, 'promoted', {sql_literal(user.email)}, current_timestamp(), {sql_literal(op['table'])}, {row_to_json(op['key'])}, {row_to_json(op.get('before') or {})}, {row_to_json(op.get('after') or {})}, NULL, current_timestamp(), {sql_literal(settings.source_system)})"
         )
 
     statements.append(
-        f"UPDATE {settings.fq_schema}.change_request SET status = 'promoted', promoted_at = current_timestamp(), updated_at = current_timestamp(), audit_timestamp = current_timestamp(), source_system = {sql_literal(settings.source_system)} WHERE request_id = {sql_literal(request_id)};"
+        f"UPDATE {settings.fq_schema}.change_request SET status = 'promoted', promoted_at = current_timestamp(), updated_at = current_timestamp(), audit_timestamp = current_timestamp(), source_system = {sql_literal(settings.source_system)} WHERE request_id = {sql_literal(request_id)}"
     )
     if audit_rows:
         statements.append(
-            f"INSERT INTO {settings.fq_schema}.change_audit_log (audit_id, request_id, action, actor, action_at, object_type, object_id, before_json, after_json, table_versions, audit_timestamp, source_system) VALUES {comma_list(audit_rows)};"
+            f"INSERT INTO {settings.fq_schema}.change_audit_log (audit_id, request_id, action, actor, action_at, object_type, object_id, before_json, after_json, table_versions, audit_timestamp, source_system) VALUES {comma_list(audit_rows)}"
         )
-    sql = "BEGIN ATOMIC\n  " + "\n  ".join(statements) + "\nEND;"
-    db.execute(sql, wait_s=60)
+    # One unit across both stores: Lakebase transaction + UC BEGIN ATOMIC (see ConfigClient.run_guarded)
+    db.run_guarded(statements, wait_s=60)
     return get_change_request(db, request_id)
 
 

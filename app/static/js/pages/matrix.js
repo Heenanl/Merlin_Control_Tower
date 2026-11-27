@@ -28,7 +28,7 @@ export async function renderMatrix(mount, state, { notify }) {
   const items = [...contents.values()];
   const ui = {
     selected: contents.has(state.matrixSelected) ? state.matrixSelected : items[0]?.content_id,
-    contentQuery: "",
+    contentQuery: state.matrixQuery || "", // set by the search box in the hero card
     ruleQuery: "",
     ruleFilter: "applied",
     drafted: new Set(),
@@ -49,6 +49,8 @@ export async function renderMatrix(mount, state, { notify }) {
       </div>
     </section>
   `;
+  mount.querySelector("#mx-content-search").value = ui.contentQuery;
+  state.matrixQuery = "";
   const listEl = mount.querySelector("#mx-content-list");
   const detailEl = mount.querySelector("#mx-detail");
 

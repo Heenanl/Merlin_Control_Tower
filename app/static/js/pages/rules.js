@@ -18,7 +18,7 @@ export async function renderRules(mount, state, { notify }) {
             <label>Name<input name="name" placeholder="Mortgage green upgrade" required /></label>
             <label>Product family<input name="product_family" placeholder="mortgage" required /></label>
             <label>Weight<input name="proposition_weight" type="number" min="0" step="0.01" value="1.0" /></label>
-            <label>Channel<select name="channel_code"><option>email</option><option>bank_mail</option></select></label>
+            <label>Channel<select name="channel_code"><option value="email">Email</option><option value="push">Push notification</option><option value="in_app">In-app message</option><option value="sms">SMS</option></select></label>
             <label>Language<select name="language_code"><option>NL</option><option>EN</option></select></label>
             <label>Message type<select name="message_type"><option>offer</option><option>tip</option></select></label>
           </div>

@@ -17,6 +17,7 @@ class CurrentUser:
     preferred_username: str
     access_token: str
     roles: Set[str]
+    backend: str = "uc"  # read backend picked with the UI toggle: uc or lakebase
 
     def require_any(self, allowed: Iterable[str]) -> None:
         if self.roles.intersection(set(allowed)):
@@ -52,4 +53,7 @@ def forwarded_identity(request: Request) -> CurrentUser:
         raise HTTPException(status_code=401, detail="Missing x-forwarded-email header. Run inside Databricks Apps.")
 
     roles = _roles_for(email, access_token)
-    return CurrentUser(user_id=user_id, email=email, preferred_username=preferred_username, access_token=access_token, roles=roles)
+    backend = (request.headers.get("x-merlin-backend") or settings.default_backend).strip().lower()
+    if backend not in {"uc", "lakebase"}:
+        backend = "uc"
+    return CurrentUser(user_id=user_id, email=email, preferred_username=preferred_username, access_token=access_token, roles=roles, backend=backend)

@@ -1,4 +1,8 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "6"
+# ///
 # DBTITLE 1,Title
 # MAGIC %md
 # MAGIC # Merlin Control Tower: synthetic demo data
@@ -50,7 +54,7 @@ TABLES = {
     cols=f"""content_id STRING NOT NULL COMMENT 'Primary key: 4 digits + 2 capital letters (e.g. 1217EE)',
   message_type STRING COMMENT 'tip or offer',
   proposition_id STRING COMMENT 'Foreign key to proposition.proposition_id',
-  channel_code STRING COMMENT 'Delivery channel: email or bank_mail',
+  channel_code STRING COMMENT 'Delivery channel: email, push (app notification), in_app (message inside the mobile app) or sms',
   optin_id STRING COMMENT 'Consent (opt-in) required to send this content',
   language_code STRING COMMENT 'NL or EN',
   customer_segment_id STRING COMMENT 'Target customer segment, or ALL',
@@ -63,7 +67,7 @@ TABLES = {
   CONSTRAINT pk_content PRIMARY KEY (content_id)""",
     checks={"chk_content_id": "content_id RLIKE '^[0-9]{4}[A-Z]{2}$'",
             "chk_content_msg": "message_type IN ('tip','offer')",
-            "chk_content_chan": "channel_code IN ('email','bank_mail')",
+            "chk_content_chan": "channel_code IN ('email','push','in_app','sms')",
             "chk_content_lang": "language_code IN ('NL','EN')",
             "chk_content_freq": "content_frequency > 0",
             "chk_content_freq_lvl": "content_frequency_level IN ('weekly','biweekly','monthly','quarterly')"}),
@@ -110,6 +114,9 @@ TABLES = {
   age_band STRING COMMENT 'Age band, e.g. 25-34',
   income_band STRING COMMENT 'Annual gross income band in EUR, e.g. 50-80k',
   has_email_optin BOOLEAN COMMENT 'Customer consented to email marketing (OPT_EMAIL_MARKETING)',
+  has_mobile_app BOOLEAN COMMENT 'Customer actively uses the mobile banking app; required for push and in_app content',
+  has_push_optin BOOLEAN COMMENT 'Customer consented to push notifications (OPT_PUSH_MARKETING); only possible when has_mobile_app',
+  has_sms_optin BOOLEAN COMMENT 'Customer consented to SMS marketing (OPT_SMS_MARKETING)',
   owned_products ARRAY<STRING> COMMENT 'proposition_ids the customer already holds',
   {AUDIT},
   CONSTRAINT pk_customer PRIMARY KEY (business_contact_number)"""),
@@ -281,31 +288,87 @@ write_table(spark.createDataFrame(PROPOSITIONS,
     "proposition_id string, name string, product_family string, proposition_weight double, active_ind boolean"),
     "proposition")
 
-# --- content (40 rows, exactly 10 = 25% older than 300 days) -------------------
-CONTENT_PER_PROP = [4, 3, 3, 4, 3, 4, 3, 4, 3, 3, 3, 3]
-SUFFIXES = ["EE", "EN", "NL", "BM", "TP", "OF", "CR", "SV", "MA", "IN"]
-SEGMENT_TARGET = {"P002": ["STUDENT"], "P005": ["RETAIL", "PREFERRED"],
-                  "P006": ["RETAIL", "PREFERRED"], "P007": ["RETAIL", "PREFERRED"],
-                  "P012": ["RETAIL", "PREFERRED"], "P008": ["PREFERRED", "PRIVATE", "RETAIL"]}
-FREQ_LEVELS = ["weekly", "biweekly", "monthly", "quarterly"]
-
-n_content = sum(CONTENT_PER_PROP)
-stale_idx = set(rng.sample(range(n_content), 10))
-content_rows, i = [], 0
-for (pid, _, _, _, p_active), n in zip(PROPOSITIONS, CONTENT_PER_PROP):
-    for j in range(n):
-        cid = f"{1200 + i * 3 + rng.randint(0, 2):04d}{rng.choice(SUFFIXES)}"   # unique: 3-wide slot per i
-        channel = rng.choice(["email", "email", "bank_mail"])
-        age_days = rng.randint(301, 720) if i in stale_idx else rng.randint(3, 290)
-        content_rows.append((
-            cid, "offer" if j == 0 else rng.choice(["tip", "offer"]), pid, channel,
-            "OPT_EMAIL_MARKETING" if channel == "email" else "OPT_BANKMAIL_SERVICE",
-            "NL" if rng.random() < 0.7 else "EN",
-            rng.choice(SEGMENT_TARGET.get(pid, ["ALL", "ALL", "RETAIL", "PREFERRED"])),
-            rng.randint(1, 3), rng.choice(FREQ_LEVELS),
-            bool(p_active and rng.random() > 0.1),
-            TODAY - datetime.timedelta(days=age_days)))
-        i += 1
+# --- content (36 rows; 9 = 25% older than 300 days) ---------------------------------------------
+# Channels: email, push (app notification), in_app (message inside the app), sms.
+# Six propositions (P001, P002, P006, P008, P009, P012) have one item on every channel; the other six have two.
+# The simulation sends the newest eligible item. DEMO_CONTENT_AGES below varies channel order
+# to balance the first-run channel split without changing eligibility, scoring or consent.
+# age_days = days since last_updated_date (> 300 = stale). Content of the inactive proposition P007 is inactive.
+CONTENT = [  # content_id, message_type, proposition_id, channel_code, language_code, customer_segment_id, age_days
+    # P001 Credit Card Gold: all channels
+    ("1211SV", "offer", "P001", "push",   "NL", "ALL",        20),
+    ("1200EN", "offer", "P001", "in_app", "EN", "ALL",        45),
+    ("1205MA", "offer", "P001", "sms",    "NL", "ALL",        90),
+    ("1206BM", "tip",   "P001", "email",  "NL", "ALL",       150),
+    # P002 Student Credit Card: all channels
+    ("1218MA", "tip",   "P002", "push",   "NL", "STUDENT",    25),
+    ("1214EN", "offer", "P002", "in_app", "EN", "STUDENT",    60),
+    ("1217SM", "offer", "P002", "sms",    "NL", "STUDENT",   110),
+    ("1216OF", "offer", "P002", "email",  "NL", "STUDENT",   493),  # stale
+    # P003 Term Deposit 1 Year
+    ("1229MA", "offer", "P003", "sms",    "EN", "ALL",       140),
+    ("1221BM", "offer", "P003", "email",  "NL", "ALL",       716),  # stale
+    # P004 Flexible Savings Account
+    ("1240EE", "tip",   "P004", "push",   "NL", "ALL",        40),
+    ("1230MA", "offer", "P004", "in_app", "EN", "ALL",       140),
+    # P005 Kids Savings Account
+    ("1249EN", "tip",   "P005", "in_app", "NL", "RETAIL",     70),
+    ("1244IN", "offer", "P005", "email",  "NL", "RETAIL",    382),  # stale
+    # P006 Mortgage Advice Appointment: all channels
+    ("1257OF", "offer", "P006", "push",   "NL", "RETAIL",     16),
+    ("1262IN", "tip",   "P006", "in_app", "EN", "RETAIL",     40),
+    ("1254EN", "tip",   "P006", "email",  "NL", "RETAIL",    130),
+    ("1253BM", "offer", "P006", "sms",    "NL", "RETAIL",    463),  # stale
+    # P007 Mortgage Interest Rate Review (inactive proposition)
+    ("1264CR", "offer", "P007", "push",   "EN", "RETAIL",    245),
+    ("1266CR", "tip",   "P007", "sms",    "NL", "RETAIL",    330),  # stale
+    # P008 Investment Starter: all channels
+    ("1280MA", "tip",   "P008", "push",   "NL", "PREFERRED",  30),
+    ("1272MA", "offer", "P008", "in_app", "EN", "PREFERRED",  53),
+    ("1281EE", "offer", "P008", "sms",    "NL", "PREFERRED", 120),
+    ("1275CR", "offer", "P008", "email",  "NL", "PREFERRED", 410),  # stale
+    # P009 Pension Savings (Lijfrente): all channels
+    ("1288IN", "tip",   "P009", "push",   "NL", "ALL",        35),
+    ("1289AP", "offer", "P009", "in_app", "NL", "ALL",        67),
+    ("1291NL", "offer", "P009", "sms",    "NL", "ALL",       159),
+    ("1284BM", "offer", "P009", "email",  "EN", "ALL",       520),  # stale
+    # P010 Home Insurance
+    ("1296OF", "offer", "P010", "in_app", "EN", "ALL",        86),
+    ("1301TP", "tip",   "P010", "sms",    "NL", "ALL",       320),  # stale
+    # P011 Travel Insurance
+    ("1305EN", "offer", "P011", "push",   "NL", "ALL",       120),
+    ("1304BM", "offer", "P011", "sms",    "NL", "ALL",       181),
+    # P012 Green Home Improvement Loan: all channels
+    ("1313MA", "offer", "P012", "push",   "NL", "PREFERRED",  22),
+    ("1317NL", "tip",   "P012", "in_app", "NL", "PREFERRED",  80),
+    ("1315SM", "offer", "P012", "sms",    "NL", "PREFERRED", 150),
+    ("1314BM", "offer", "P012", "email",  "EN", "PREFERRED", 356),  # stale
+]
+# Demo-only freshness ordering calibrated on the seeded population; not production channel quotas.
+# Keeps 9 of 36 items stale (>300 days). Later runs vary due to recent-contact exclusions.
+DEMO_CONTENT_AGES = {
+    "1200EN": 20, "1211SV": 55, "1206BM": 120, "1205MA": 410,
+    "1214EN": 25, "1218MA": 60, "1217SM": 110, "1216OF": 493,
+    "1221BM": 70, "1229MA": 716, "1230MA": 40, "1240EE": 140,
+    "1249EN": 70, "1244IN": 260,
+    "1253BM": 16, "1257OF": 45, "1254EN": 130, "1262IN": 463,
+    "1264CR": 245, "1266CR": 330,
+    "1272MA": 30, "1280MA": 53, "1275CR": 120, "1281EE": 410,
+    "1289AP": 35, "1288IN": 67, "1291NL": 159, "1284BM": 520,
+    "1296OF": 86, "1301TP": 320, "1305EN": 120, "1304BM": 181,
+    "1317NL": 22, "1313MA": 80, "1314BM": 150, "1315SM": 356,
+}
+assert set(DEMO_CONTENT_AGES) == {row[0] for row in CONTENT}
+CONTENT = [(*row[:-1], DEMO_CONTENT_AGES[row[0]]) for row in CONTENT]
+ALL_CHANNEL_PROPS = ["P001", "P002", "P006", "P008", "P009", "P012"]
+CHANNEL_OPTIN = {"email": "OPT_EMAIL_MARKETING", "push": "OPT_PUSH_MARKETING",
+                 "in_app": "OPT_INAPP_SERVICE", "sms": "OPT_SMS_MARKETING"}
+PROP_ACTIVE = {pid: active for pid, *_, active in PROPOSITIONS}
+content_rows = [
+    (cid, msg, pid, chan, CHANNEL_OPTIN[chan],
+     lang, seg, 1, "monthly", PROP_ACTIVE[pid], TODAY - datetime.timedelta(days=age))
+    for cid, msg, pid, chan, lang, seg, age in CONTENT
+]
 write_table(spark.createDataFrame(content_rows,
     "content_id string, message_type string, proposition_id string, channel_code string, optin_id string, "
     "language_code string, customer_segment_id string, content_frequency int, content_frequency_level string, "
@@ -341,7 +404,7 @@ GENERAL_RULES = [
     (1003, "customer_segment", "Exclude Youth customers (under 18)", "Exclude", "segment = 'YOUTH'", "live"),
     (1004, "customer_segment", "Students only", "Include", "segment = 'STUDENT'", "live"),
     (1005, "optin", "Customer has email marketing opt-in", "Include", "has_email_optin = true", "live"),
-    (1006, "channel_code", "Bank mail is available to every customer", "Include", "true", "live"),
+    (1006, "channel_code", "Customer actively uses the mobile app (push and in-app content)", "Include", "has_mobile_app = true", "live"),
     (1007, "language", "Dutch-language content is available to every customer", "Include", "true", "live"),
     (1008, "message_type", "No commercial offers to Youth customers", "Exclude", "segment = 'YOUTH'", "live"),
     (1009, "proposition", "Does not already own a credit card", "Exclude", "arrays_overlap(owned_products, array('P001','P002'))", "live"),
@@ -354,6 +417,8 @@ GENERAL_RULES = [
     (1016, "content", "No pension savings tips to customers aged 65+", "Exclude", "age_band = '65+'", "live"),
     (1017, "message_type", "Offers only for annual income of EUR 30k or more", "Include", "income_band <> '<30k'", "draft"),
     (1018, "proposition", "Green loan: likely homeowner (has home insurance or mortgage advice)", "Include", "arrays_overlap(owned_products, array('P006','P010'))", "draft"),
+    (1019, "optin", "Customer has push notification opt-in", "Include", "has_push_optin = true", "live"),
+    (1020, "optin", "Customer has SMS marketing opt-in", "Include", "has_sms_optin = true", "live"),
 ]
 EXCLUSION_RULES = [
     (10000 + int(pid[1:]), "proposition",
@@ -387,6 +452,8 @@ PROP_SET = {"P001": "RS_CREDIT", "P002": "RS_CREDIT", "P003": "RS_SAVINGS", "P00
 PROP_RULES = {"P001": [1009, 1013], "P002": [1009], "P006": [1010], "P008": [1011],
               "P009": [1016], "P010": [1012], "P012": [1018]}
 SEGMENT_RULE = {"RETAIL": 1001, "PREFERRED": 1001, "PRIVATE": 1002, "STUDENT": 1004}
+# Who can be reached on each channel: email opt-in, app user (+ push opt-in), SMS opt-in
+CHANNEL_RULES = {"email": [1005], "push": [1006, 1019], "in_app": [1006], "sms": [1020]}
 
 mappings = {}
 def add_map(cid, rid, sid=None):
@@ -400,7 +467,8 @@ for (cid, msg, pid, chan, _, lang, seg, *_rest) in content_rows:
         add_map(cid, rid)
     if seg in SEGMENT_RULE:
         add_map(cid, SEGMENT_RULE[seg])
-    add_map(cid, 1005 if chan == "email" else 1006)
+    for rid in CHANNEL_RULES[chan]:
+        add_map(cid, rid)
     if lang == "NL":
         add_map(cid, 1007)
     if msg == "offer":
@@ -435,7 +503,13 @@ customers = (
          .when(seg == "PREFERRED", F.when(inc_r < 0.30, "50-80k").when(inc_r < 0.75, "80-120k").otherwise(">120k"))
          .when(inc_r < 0.30, "<30k").when(inc_r < 0.65, "30-50k").when(inc_r < 0.90, "50-80k").otherwise("80-120k"))
     .withColumn("has_email_optin", opt_r < F.when(seg == "YOUTH", 0.40).otherwise(0.72))
-    .drop("seg_r", "age_r", "inc_r", "opt_r")
+    # New seeds for the channel flags, so the columns above keep their values
+    .withColumns({"app_r": F.rand(SEED + 5), "push_r": F.rand(SEED + 6), "sms_r": F.rand(SEED + 7)})
+    .withColumn("has_mobile_app", F.col("app_r") < F.when(seg.isin("YOUTH", "STUDENT"), 0.90)
+                                                  .when(F.col("age_band") == "65+", 0.50).otherwise(0.80))
+    .withColumn("has_push_optin", F.col("has_mobile_app") & (F.col("push_r") < 0.60))
+    .withColumn("has_sms_optin", F.col("sms_r") < F.when(seg == "YOUTH", 0.15).otherwise(0.35))
+    .drop("seg_r", "age_r", "inc_r", "opt_r", "app_r", "push_r", "sms_r")
 )
 
 adult = ~seg.isin("YOUTH", "STUDENT")
@@ -485,12 +559,18 @@ checks = {}
 c = T("content")
 checks["content: 25% older than 300 days"] = c.filter(F.datediff(F.current_date(), "last_updated_date") > 300).count() / c.count() == 0.25
 checks["content: unique content_id"] = c.select("content_id").distinct().count() == c.count()
+per_prop = {r["proposition_id"]: (r["n"], r["ch"]) for r in c.groupBy("proposition_id").agg(
+    F.count("*").alias("n"), F.countDistinct("channel_code").alias("ch")).collect()}
+checks["content: 36 items, at most one per proposition and channel"] = c.count() == 36 and all(n == ch for n, ch in per_prop.values())
+checks["content: all 4 channels for P001, P002, P006, P008, P009, P012; 2 for the others"] = all(
+    per_prop[p][1] == (4 if p in ALL_CHANNEL_PROPS else 2) for p, *_ in PROPOSITIONS)
+checks["content: only email, push, in_app, sms"] = {r[0] for r in c.select("channel_code").distinct().collect()} == {"email", "push", "in_app", "sms"}
 
 r = T("eligibility_rule")
 excl = r.filter("eligibility_rule_id >= 10000").withColumn("pid", F.regexp_extract("sql_condition", "proposition_id = '(P[0-9]{3})'", 1))
 checks["rules: 12 exclusions, id = 10000 + proposition number"] = (
     excl.count() == 12 and excl.filter(F.col("eligibility_rule_id") != 10000 + F.substring("pid", 2, 3).cast("int")).count() == 0)
-checks["rules: total 30"] = r.count() == 30
+checks["rules: total 32"] = r.count() == len(GENERAL_RULES) + len(EXCLUSION_RULES) == 32
 
 m = T("content_eligibility_rule")
 checks["mappings: no orphan content"] = m.join(c, "content_id", "left_anti").count() == 0
@@ -505,6 +585,7 @@ cu, ms = T("customer"), T("model_score")
 seg_share = {r["segment"]: r["count"] / N_CUSTOMERS for r in cu.groupBy("segment").count().collect()}
 TARGET_SHARE = {"RETAIL": 0.55, "PREFERRED": 0.25, "PRIVATE": 0.05, "YOUTH": 0.08, "STUDENT": 0.07}
 checks["customer: segment mix within 1pt of target"] = all(abs(seg_share.get(s, 0) - p) < 0.01 for s, p in TARGET_SHARE.items())
+checks["customer: push opt-in only for app users"] = cu.filter("has_push_optin AND NOT has_mobile_app").count() == 0
 checks["customer: 50,000 unique"] = cu.select("business_contact_number").distinct().count() == N_CUSTOMERS
 checks["model_score: 1 per customer x proposition"] = ms.count() == N_CUSTOMERS * len(PROPOSITIONS) == ms.select("business_contact_number", "proposition_id").distinct().count()
 checks["model_score: no orphan customers"] = ms.join(cu, "business_contact_number", "left_anti").count() == 0
@@ -521,3 +602,108 @@ display(cu.groupBy("segment").agg(F.count("*").alias("customers"), F.round(F.avg
                                   F.round(F.avg(F.col("has_email_optin").cast("int")), 2).alias("email_optin_rate")).orderBy("segment"))
 display(ms.groupBy("proposition_id").agg(F.round(F.avg("model_score"), 3).alias("avg_score"),
                                          F.round(F.avg((F.col("model_score") >= 0.30).cast("int")), 3).alias("share_ge_0_30")).orderBy("proposition_id"))
+
+# COMMAND ----------
+
+# DBTITLE 1,Seed Lakebase (main config store)
+# Lakebase Postgres is the app's main store for config, change requests and the audit log.
+# The UC tables above are kept as a mirror by the app (the simulation reads them).
+# This cell rebuilds the Postgres schema from the UC definitions and copies every row, so a reset
+# leaves both stores identical. Database and schema are both named merlin_demo, so the app's fully
+# qualified names (merlin_demo.merlin_demo.<table>) are valid in Postgres too.
+import importlib.util, subprocess, sys
+if importlib.util.find_spec("psycopg") is None:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "psycopg[binary]>=3.1"])
+import psycopg
+from databricks.sdk import WorkspaceClient
+
+LAKEBASE_ENDPOINT = "projects/merlin-control-tower/branches/production/endpoints/primary"
+PG_DATABASE = CATALOG          # merlin_demo
+PG_SCHEMA = SCHEMA             # merlin_demo
+APP_PG_ROLE = None             # app service principal client id; set after the app has the Lakebase resource
+LB_TABLES = {  # table: primary key
+    "proposition": ["proposition_id"], "content": ["content_id"], "eligibility_rule": ["eligibility_rule_id"],
+    "eligibility_rule_set": ["eligibility_rule_set_id", "eligibility_rule_id"],
+    "content_eligibility_rule": ["content_id", "eligibility_rule_id"], "model_metadata": ["key"],
+    "app_roles": ["user_email", "role"], "change_request": ["request_id"], "change_audit_log": ["audit_id"],
+}
+PG_TYPES = {"string": "text", "int": "integer", "bigint": "bigint", "double": "double precision",
+            "boolean": "boolean", "date": "date", "timestamp": "timestamptz"}
+
+w = WorkspaceClient()
+pg_host = w.postgres.get_endpoint(name=LAKEBASE_ENDPOINT).status.hosts.host
+pg_user = w.current_user.me().user_name
+def pg_connect(dbname):
+    return psycopg.connect(host=pg_host, dbname=dbname, user=pg_user, sslmode="require",
+                           password=w.postgres.generate_database_credential(endpoint=LAKEBASE_ENDPOINT).token)
+
+with pg_connect("databricks_postgres") as c:
+    c.autocommit = True
+    if not c.execute("SELECT 1 FROM pg_database WHERE datname = %s", (PG_DATABASE,)).fetchone():
+        c.execute(f'CREATE DATABASE "{PG_DATABASE}"')
+
+uc_cols = spark.sql(f"""SELECT table_name, column_name, full_data_type, comment FROM {CATALOG}.information_schema.columns
+  WHERE table_schema = '{SCHEMA}' AND table_name IN ({', '.join(repr(t) for t in LB_TABLES)}) ORDER BY table_name, ordinal_position""").collect()
+uc_comments = {r.table_name: r.comment for r in spark.sql(f"""SELECT table_name, comment FROM {CATALOG}.information_schema.tables
+  WHERE table_schema = '{SCHEMA}' AND table_name IN ({', '.join(repr(t) for t in LB_TABLES)})""").collect()}
+cols_by_table = {t: [r for r in uc_cols if r.table_name == t] for t in LB_TABLES}
+
+with pg_connect(PG_DATABASE) as c:   # one transaction: the whole reset applies or nothing does
+    c.execute("SET TIME ZONE 'UTC'")
+    c.execute(f"DROP SCHEMA IF EXISTS {PG_SCHEMA} CASCADE")
+    c.execute(f"CREATE SCHEMA {PG_SCHEMA}")
+    c.execute(f"COMMENT ON SCHEMA {PG_SCHEMA} IS 'Merlin Control Tower main store: config, change requests and audit log (synthetic demo data)'")
+    # Databricks SQL compatibility: the app sends the same SQL text to both stores
+    c.execute(f"CREATE FUNCTION {PG_SCHEMA}.datediff(a date, b date) RETURNS integer LANGUAGE sql IMMUTABLE AS 'SELECT a - b'")
+    c.execute(f"CREATE DOMAIN {PG_SCHEMA}.string AS text")             # CAST(x AS string)
+    c.execute(f"CREATE DOMAIN {PG_SCHEMA}.double AS double precision")  # CAST(x AS double)
+    # The app connects as its service principal (role created by the app's `postgres` resource)
+    APP_SP = "a290334a-61d2-4d81-9e3a-a1928705aa73"  # merlin-control-tower service principal client ID
+    if c.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (APP_SP,)).fetchone():
+        c.execute(f'GRANT USAGE ON SCHEMA {PG_SCHEMA} TO "{APP_SP}"')
+        c.execute(f'GRANT EXECUTE ON FUNCTION {PG_SCHEMA}.datediff(date, date) TO "{APP_SP}"')
+        c.execute(f'ALTER DEFAULT PRIVILEGES IN SCHEMA {PG_SCHEMA} GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO "{APP_SP}"')
+    else:
+        print(f"WARNING: app role {APP_SP} not found; attach the Lakebase resource to the app, then rerun")
+    for t, pk in LB_TABLES.items():
+        col_sql = ",\n  ".join(f'"{r.column_name}" {PG_TYPES[r.full_data_type]}' + (" NOT NULL" if r.column_name in pk else "") for r in cols_by_table[t])
+        c.execute(f"CREATE TABLE {PG_SCHEMA}.{t} (\n  {col_sql},\n  PRIMARY KEY ({', '.join(pk)})\n)")
+        c.execute(f"COMMENT ON TABLE {PG_SCHEMA}.{t} IS %s".replace("%s", "'" + (uc_comments.get(t) or "").replace("'", "''") + "'"))
+        for r in cols_by_table[t]:
+            if r.comment:
+                c.execute(f'COMMENT ON COLUMN {PG_SCHEMA}.{t}."{r.column_name}" IS ' + "'" + r.comment.replace("'", "''") + "'")
+        names = [r.column_name for r in cols_by_table[t]]
+        rows = [tuple(row[n] for n in names) for row in spark.table(f"{FQ}.{t}").select(*names).collect()]
+        if rows:
+            with c.cursor() as cur:
+                cur.executemany(f"INSERT INTO {PG_SCHEMA}.{t} ({', '.join(chr(34) + n + chr(34) for n in names)}) VALUES ({', '.join(['%s'] * len(names))})", rows)
+    # Last successful simulation run (contact history itself stays in UC)
+    c.execute(f"""CREATE TABLE {PG_SCHEMA}.simulation_status (
+  id integer PRIMARY KEY CHECK (id = 1), last_simulation_run timestamptz, last_snapshotdate date,
+  audit_timestamp timestamptz, source_system text)""")
+    c.execute(f"COMMENT ON TABLE {PG_SCHEMA}.simulation_status IS 'Single row: last successful simulation run, copied from UC contact_decision_output by the app'")
+    last_run = spark.sql(f"SELECT max(run_timestamp) AS r, max(snapshotdate) AS d FROM {FQ}.contact_decision_output").first()
+    if last_run.r is not None:
+        c.execute(f"INSERT INTO {PG_SCHEMA}.simulation_status VALUES (1, %s, %s, now(), %s)", (last_run.r, last_run.d, SOURCE_SYSTEM))
+    if APP_PG_ROLE:
+        c.execute(f'GRANT USAGE ON SCHEMA {PG_SCHEMA} TO "{APP_PG_ROLE}"')
+        c.execute(f'GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA {PG_SCHEMA} TO "{APP_PG_ROLE}"')
+        c.execute(f'GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA {PG_SCHEMA} TO "{APP_PG_ROLE}"')
+
+# Verify: every table identical in both stores (row for row, all columns)
+import datetime as _dt
+def _norm(v):
+    if isinstance(v, _dt.datetime):
+        return (v.astimezone(_dt.timezone.utc).replace(tzinfo=None) if v.tzinfo else v).isoformat()
+    return v
+lb_checks = {}
+with pg_connect(PG_DATABASE) as c:
+    c.execute("SET TIME ZONE 'UTC'")
+    for t in LB_TABLES:
+        names = [r.column_name for r in cols_by_table[t]]
+        pg_rows = {tuple(_norm(v) for v in r) for r in c.execute(f"SELECT {', '.join(chr(34) + n + chr(34) for n in names)} FROM {PG_SCHEMA}.{t}").fetchall()}
+        uc_rows = {tuple(_norm(row[n]) for n in names) for row in spark.table(f"{FQ}.{t}").select(*names).collect()}
+        lb_checks[t] = (len(uc_rows), len(pg_rows), uc_rows == pg_rows)
+for t, (n_uc, n_pg, same) in lb_checks.items():
+    print(f"{'PASS' if same else 'FAIL'} lakebase {t:26s} UC {n_uc:>4}  Lakebase {n_pg:>4}")
+assert all(same for *_, same in lb_checks.values()), "Lakebase and UC differ"
